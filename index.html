@@ -226,8 +226,9 @@ tr:last-child td{border-bottom:none}
   padding:2px 8px;border-radius:20px;letter-spacing:.04em;text-transform:uppercase}
 .badge-active{background:rgba(16,185,129,0.12);color:#10b981;border:1px solid rgba(16,185,129,0.25)}
 .badge-churned{background:rgba(244,63,94,0.1);color:#f43f5e;border:1px solid rgba(244,63,94,0.2)}
-.cust-row{cursor:pointer}
-.cust-row:hover td{background:rgba(99,102,241,0.06)!important}
+.cust-row{cursor:pointer;transition:background .12s}
+.cust-row:hover td{background:rgba(255,255,255,0.055)!important;border-bottom-color:rgba(255,255,255,0.08)!important}
+.cust-row:active td{background:rgba(99,102,241,0.1)!important}
 .email-cell{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;font-size:11px}
 /* Pagination */
 .cpag{display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 20px;border-top:1px solid var(--bd)}
@@ -333,11 +334,9 @@ tr:last-child td{border-bottom:none}
     <div class="vd"></div>
     <div class="fg"><span class="fl">From</span><select id="selS" onchange="applyFilters()"></select></div>
     <div class="fg"><span class="fl">To</span><select id="selE" onchange="applyFilters()"></select></div>
-    <div class="vd"></div>
-    <div class="tr" id="movTogs"></div>
   </div>
   <div class="tbr">
-    <span class="upd">Updated 2026-03-17 22:16</span>
+    <span class="upd">Updated 2026-03-18 15:59</span>
     <button class="mbtn" onclick="document.getElementById('mmodal').classList.toggle('open')">Methodology</button>
     <button class="mbtn" onclick="doLogout()">Sign Out</button>
   </div>
@@ -360,7 +359,7 @@ tr:last-child td{border-bottom:none}
       <tr><td>Customers</td><td>Deduplicated by email. ARPA = Closing MRR / Customers. LTV = ARPA / Avg Churn.</td></tr>
       <tr><td>Waterfall</td><td>Closing = Opening + New + Expansion + Reactivation - Contraction - Churn.</td></tr>
     </tbody></table>
-    <p>Generated: 2026-03-17 22:16 &middot; 2025-01 to 2026-02 &middot; 10,047 customers tracked</p>
+    <p>Generated: 2026-03-18 15:59 &middot; 2025-01 to 2026-02 &middot; 10,047 customers tracked</p>
   </div>
 </div>
 
@@ -377,6 +376,10 @@ tr:last-child td{border-bottom:none}
   <div class="ibar" id="ibar"></div>
   <div class="kgrid" id="kgrid"></div>
   <div class="sbar" id="sbar"></div>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;padding:10px 16px;background:rgba(255,255,255,0.02);border:1px solid var(--bd);border-radius:10px">
+    <span style="font-size:11px;color:var(--mu);font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;flex-shrink:0">Movement Filters</span>
+    <div class="tr" id="movTogs" style="flex-wrap:wrap"></div>
+  </div>
   <div class="grid g21">
     <div class="card" style="min-height:360px">
       <div class="ch"><div>
@@ -434,6 +437,15 @@ tr:last-child td{border-bottom:none}
     <div><div class="pt">Revenue Deep Dive</div>
       <div class="ps">All revenue charts &middot; Use filters above to adjust period</div></div>
   </div>
+  <div class="grid g1">
+    <div class="card" style="min-height:300px">
+      <div class="ch"><div>
+        <div class="ct">ARPA Trend</div>
+        <div class="cs">Average Revenue Per Account by month &mdash; key signal for pricing &amp; expansion health</div>
+      </div></div>
+      <div class="cw"><canvas id="cAR"></canvas></div>
+    </div>
+  </div>
   <div class="grid g11">
     <div class="card" style="min-height:360px">
       <div class="ch"><div>
@@ -459,20 +471,13 @@ tr:last-child td{border-bottom:none}
       <div class="cw"><canvas id="cT2"></canvas></div>
     </div>
   </div>
-  <div class="grid g111">
+  <div class="grid g11">
     <div class="card" style="min-height:320px">
       <div class="ch"><div>
         <div class="ct">Customer &amp; Subscription Metrics</div>
         <div class="cs">Active customers and subscriptions over time</div>
       </div></div>
       <div class="cw"><canvas id="cCu"></canvas></div>
-    </div>
-    <div class="card" style="min-height:320px">
-      <div class="ch"><div>
-        <div class="ct">ARPA Trend</div>
-        <div class="cs">Average Revenue Per Account by month</div>
-      </div></div>
-      <div class="cw"><canvas id="cAR"></canvas></div>
     </div>
     <div class="card" style="min-height:320px">
       <div class="ch"><div>
@@ -1014,7 +1019,7 @@ function renderCustomerList(){
   var totMRR=CUSTOMERS.filter(function(c){return c.status==='active';}).reduce(function(s,c){return s+c.current_mrr;},0);
   document.getElementById('custSummary').innerHTML=
     '<div class="si"><div class="sd" style="background:#10b981"></div><span class="sl">Active</span><span class="sv">'+actN.toLocaleString()+'</span></div>'+
-    '<div class="si"><div class="sd" style="background:#f43f5e"></div><span class="sl">Churned</span><span class="sv">'+chN.toLocaleString()+'</span></div>'+
+    '<div class="si"><div class="sd" style="background:#f43f5e"></div><span class="sl">Churned</span><span class="sv">'+chN.toLocaleString()+'</span><span style="font-size:10px;color:var(--fa);margin-left:5px">since 2025-01</span></div>'+
     '<div class="si"><div class="sd" style="background:#6366f1"></div><span class="sl">Active MRR</span><span class="sv">'+f0(totMRR)+'</span></div>'+
     '<div class="si"><div class="sd" style="background:#f59e0b"></div><span class="sl">Total Tracked</span><span class="sv">'+CUSTOMERS.length.toLocaleString()+'</span></div>';
   // Table header
