@@ -1,0 +1,61 @@
+name: Daily MRR Pipeline
+
+on:
+  schedule:
+    - cron: '0 6 * * *'      # 6:00 AM UTC every day (runs in cloud, laptop off = fine)
+  workflow_dispatch:           # also allows manual trigger from GitHub UI anytime
+
+permissions:
+  contents: write              # needed to commit updated index.html + mrr_data.json
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── 1. Checkout repo ────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Python setup ─────────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r pipeline/requirements.txt
+
+      # ── 3. Fetch latest Paddle data via API ──────────────────────────────────
+      - name: Fetch Paddle data
+        env:
+          PADDLE_API_KEY: ${{ secrets.PADDLE_API_KEY }}
+          PADDLE_ENV: production
+        run: python pipeline/fetch_paddle.py
+
+      # ── 4. Compute MRR metrics ───────────────────────────────────────────────
+      - name: Compute MRR
+        run: python pipeline/compute_mrr.py
+
+      # ── 5. Build dashboard HTML → index.html ────────────────────────────────
+      - name: Build dashboard
+        run: python pipeline/build_dashboard.py
+
+      # ── 6. Update Google Sheet ───────────────────────────────────────────────
+      - name: Update Google Sheet
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: '1tIN7Rat2QHcXN9B_rcmHGqRIDK4JUqEVrT8X7cy9P2Y'
+        run: python pipeline/update_gsheet.py
+
+      # ── 7. Commit updated dashboard + data back to repo ──────────────────────
+      - name: Commit & push
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name  "github-actions[bot]"
+          git add index.html pipeline/mrr_data.json
+          git diff --cached --quiet && echo "No changes to commit" || \
+            git commit -m "chore: auto-update MRR data $(date -u +%Y-%m-%d)" && git push
