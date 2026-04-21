@@ -28,7 +28,7 @@ KEY METHODOLOGY (unchanged from v3, simplified input)
 
 import csv, json, sys, glob, os
 from collections import defaultdict
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pathlib import Path
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -291,9 +291,10 @@ for i, month in enumerate(all_months):
         'mrr_churn_rate':        0.0,
         'net_mrr_churn_rate':    0.0,
         'customer_churn_rate':   0.0,
+        'nrr':                   None,   # filled in below
     }
 
-# Derived churn rates
+# Derived churn rates + NRR
 for i, month in enumerate(all_months[1:], 1):
     prev = all_months[i - 1]
     m, p = monthly_metrics[month], monthly_metrics[prev]
@@ -302,9 +303,20 @@ for i, month in enumerate(all_months[1:], 1):
     m['mrr_churn_rate']      = round(m['churn'] / d_mrr  * 100, 2) if d_mrr  > 0 else 0
     m['net_mrr_churn_rate']  = round((m['churn'] - m['expansion'] - m['reactivation']) / d_mrr * 100, 2) if d_mrr > 0 else 0
     m['customer_churn_rate'] = round(m['churned_customers'] / d_cust * 100, 2) if d_cust > 0 else 0
+    # NRR = (Opening + Expansion + Reactivation - Contraction - Churn) / Opening * 100
+    if m['opening_mrr'] > 0:
+        retained = m['opening_mrr'] + m['expansion'] + m['reactivation'] - m['contraction'] - m['churn']
+        m['nrr'] = round(retained / m['opening_mrr'] * 100, 2)
 
-# Cap to report window
-last_actual = max(m for m in monthly_metrics if monthly_metrics[m]['new_business'] > 0)
+# Cap to last COMPLETE month (exclude current partial month)
+today = date.today()
+if today.month == 1:
+    last_complete_month = f'{today.year - 1:04d}-12'
+else:
+    last_complete_month = f'{today.year:04d}-{today.month - 1:02d}'
+
+months_with_data = [m for m in monthly_metrics if monthly_metrics[m]['closing_mrr'] > 0]
+last_actual = max((m for m in months_with_data if m <= last_complete_month), default=last_complete_month)
 output_months = {m: v for m, v in monthly_metrics.items()
                  if REPORT_START <= m <= last_actual}
 out_list = sorted(output_months.keys())
@@ -374,6 +386,8 @@ lm          = output_months[last_month]
 non_zero_cr = [v['mrr_churn_rate'] for v in output_months.values() if v['mrr_churn_rate'] > 0]
 avg_churn   = sum(non_zero_cr) / len(non_zero_cr) if non_zero_cr else 1
 ltv         = lm['arpa'] / (avg_churn / 100) if avg_churn > 0 else 0
+nrr_values  = [v['nrr'] for v in output_months.values() if v.get('nrr') is not None]
+avg_nrr     = round(sum(nrr_values) / len(nrr_values), 2) if nrr_values else 0
 
 summary = {
     'current_mrr':           lm['closing_mrr'],
@@ -382,6 +396,7 @@ summary = {
     'current_customers':     lm['active_customers'],
     'current_subscriptions': lm['active_subscriptions'],
     'avg_mrr_churn_rate':    round(avg_churn, 2),
+    'avg_nrr':               avg_nrr,
     'ltv':                   round(ltv, 2),
     'data_start':            out_list[0],
     'data_end':              last_month,
@@ -407,6 +422,7 @@ print(f"  Current ARR  : ${lm['arr']:>10,.2f}", flush=True)
 print(f"  Active Cust  : {lm['active_customers']:>10,}", flush=True)
 print(f"  ARPA         : ${lm['arpa']:>10.2f}", flush=True)
 print(f"  Avg Churn    : {avg_churn:>10.2f}%", flush=True)
+print(f"  Avg NRR      : {avg_nrr:>10.2f}%", flush=True)
 print(f"  LTV          : ${ltv:>10,.2f}", flush=True)
 print(f"{'='*60}", flush=True)
 

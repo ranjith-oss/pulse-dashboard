@@ -40,18 +40,22 @@ jobs:
       - name: Compute MRR
         run: python pipeline/compute_mrr.py
 
-      # ── 5. Build dashboard HTML → index.html ────────────────────────────────
+      # ── 5. Validate data integrity (aborts pipeline if any check fails) ──────
+      - name: Validate MRR data
+        run: python pipeline/validate_mrr.py
+
+      # ── 6. Build dashboard HTML → index.html ────────────────────────────────
       - name: Build dashboard
         run: python pipeline/build_dashboard.py
 
-      # ── 6. Update Google Sheet ───────────────────────────────────────────────
+      # ── 7. Update Google Sheet ───────────────────────────────────────────────
       - name: Update Google Sheet
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: '1tIN7Rat2QHcXN9B_rcmHGqRIDK4JUqEVrT8X7cy9P2Y'
         run: python pipeline/update_gsheet.py
 
-      # ── 7. Commit updated dashboard + data back to repo ──────────────────────
+      # ── 8. Commit updated dashboard + data back to repo ──────────────────────
       - name: Commit & push
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"

@@ -77,6 +77,7 @@ sum_rows = [['Metric', 'Value'], [
     'Active Customers',     summary['current_customers']], [
     'Active Subscriptions', summary['current_subscriptions']], [
     'Avg MRR Churn Rate %', summary['avg_mrr_churn_rate']], [
+    'Avg NRR %',            summary.get('avg_nrr', 0)], [
     'Est. LTV',             fmt_usd(summary['ltv'])], [
     'Data Period',          f"{summary['data_start']} → {summary['data_end']}"], [
     'Total Months',         summary['total_months']],
@@ -88,7 +89,7 @@ ws1 = get_or_create('Monthly Breakdown')
 mb_header = ['Month', 'Opening MRR', 'New Business', 'Expansion', 'Reactivation',
              'Contraction', 'Churn', 'Net New MRR', 'Closing MRR', 'ARR',
              'Active Customers', 'New Customers', 'Churned Customers', 'ARPA',
-             'MoM Growth %', 'MRR Churn %']
+             'MoM Growth %', 'MRR Churn %', 'NRR %']
 mb_rows = [mb_header]
 for i, m in enumerate(months):
     prev = months[i-1] if i > 0 else None
@@ -104,6 +105,7 @@ for i, m in enumerate(months):
         m['active_customers'],         m['new_customers'],
         m['churned_customers'],        fmt_usd(m['arpa']),
         mom,                           round(m['mrr_churn_rate'], 2),
+        round(m['nrr'], 2) if m.get('nrr') is not None else '',
     ])
 write_sheet(ws1, mb_rows)
 
@@ -154,7 +156,7 @@ write_sheet(ws4, ca_rows)
 # ── Tab 6: Growth Metrics ─────────────────────────────────────────────────────
 ws5 = get_or_create('Growth Metrics')
 gm_header = ['Month', 'Opening MRR', 'Closing MRR', 'MoM Growth %',
-             'ARR', 'ARPA', 'Active Customers', 'New Customers', 'Active Subscriptions']
+             'ARR', 'ARPA', 'NRR %', 'Active Customers', 'New Customers', 'Active Subscriptions']
 gm_rows = [gm_header]
 for i, m in enumerate(months):
     prev = months[i-1] if i > 0 else None
@@ -164,7 +166,9 @@ for i, m in enumerate(months):
         m['month'],
         fmt_usd(m['opening_mrr']),  fmt_usd(m['closing_mrr']),
         mom,                         fmt_usd(m['arr']),
-        fmt_usd(m['arpa']),          m['active_customers'],
+        fmt_usd(m['arpa']),
+        round(m['nrr'], 2) if m.get('nrr') is not None else '',
+        m['active_customers'],
         m['new_customers'],          m['active_subscriptions'],
     ])
 write_sheet(ws5, gm_rows)

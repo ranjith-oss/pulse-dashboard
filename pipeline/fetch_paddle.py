@@ -11,7 +11,7 @@ Env vars required:
 
 import csv, os, time, json
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 try:
     import requests
@@ -21,16 +21,46 @@ except ImportError:
     import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
-API_KEY   = os.environ['PADDLE_API_KEY']
-ENV       = os.environ.get('PADDLE_ENV', 'production')
-BASE_URL  = ('https://sandbox-api.paddle.com'
-             if ENV == 'sandbox' else 'https://api.paddle.com')
-FETCH_FROM = '2024-11-01T00:00:00Z'   # seed from Nov 2024 so Jan 2025 opening is correct
-PER_PAGE   = 200                        # Paddle max
+API_KEY        = os.environ['PADDLE_API_KEY']
+ENV            = os.environ.get('PADDLE_ENV', 'production')
+BASE_URL       = ('https://sandbox-api.paddle.com'
+                  if ENV == 'sandbox' else 'https://api.paddle.com')
+FULL_FETCH_FROM = '2024-10-01T00:00:00Z'   # seed date: Paddle Billing launch month
+PER_PAGE        = 200                        # Paddle max
 
 # Output goes into the same directory as the script (pipeline/)
 OUT_DIR  = Path(__file__).parent
 TLI_OUT  = OUT_DIR / 'transaction_line_items.csv'
+
+# ── Incremental fetch: determine start date ───────────────────────────────────
+# If CSV already exists, only fetch transactions newer than the latest date in
+# it (minus 3-day buffer for late-captured payments). First run fetches full
+# history from FULL_FETCH_FROM.
+def get_incremental_start():
+    if not TLI_OUT.exists():
+        print(f"  No existing CSV — full fetch from {FULL_FETCH_FROM}", flush=True)
+        return FULL_FETCH_FROM, False   # (fetch_from, is_incremental)
+    latest_date = None
+    with open(TLI_OUT, encoding='utf-8') as f:
+        for row in csv.DictReader(f):
+            for col in ('transaction_billed_at', 'completed_at', 'transaction_created_at'):
+                val = row.get(col, '').strip()
+                if val:
+                    try:
+                        d = datetime.strptime(val[:19], '%Y-%m-%dT%H:%M:%S')
+                        if latest_date is None or d > latest_date:
+                            latest_date = d
+                    except ValueError:
+                        pass
+    if latest_date is None:
+        print(f"  Existing CSV has no dates — full fetch from {FULL_FETCH_FROM}", flush=True)
+        return FULL_FETCH_FROM, False
+    # Subtract 3-day buffer to catch any delayed payment captures
+    cutoff = (latest_date - timedelta(days=3)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    print(f"  Existing CSV latest date: {latest_date.date()} — incremental fetch from {cutoff}", flush=True)
+    return cutoff, True
+
+FETCH_FROM, IS_INCREMENTAL = get_incremental_start()
 
 # Zero-decimal currencies (don't divide by 100)
 ZERO_DECIMAL = {
@@ -66,7 +96,8 @@ def paddle_get(path, params=None):
     raise RuntimeError(f"Failed after 5 retries: {path}")
 
 # ── Fetch transactions ────────────────────────────────────────────────────────
-print(f"[1/2] Fetching completed transactions from Paddle API …", flush=True)
+mode_label = "INCREMENTAL" if IS_INCREMENTAL else "FULL"
+print(f"[1/2] Fetching completed transactions from Paddle API … [{mode_label}]", flush=True)
 print(f"      Base URL   : {BASE_URL}", flush=True)
 print(f"      Fetch from : {FETCH_FROM}", flush=True)
 
@@ -88,9 +119,12 @@ fieldnames = [
     'transaction_to_balance_currency_exchange_rate',
 ]
 
-with open(TLI_OUT, 'w', newline='', encoding='utf-8') as f:
+# Incremental: append to existing CSV (no header). Full: overwrite with header.
+file_mode = 'a' if IS_INCREMENTAL else 'w'
+with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
     writer = csv.DictWriter(f, fieldnames=fieldnames)
-    writer.writeheader()
+    if not IS_INCREMENTAL:
+        writer.writeheader()
 
     while True:
         page += 1
