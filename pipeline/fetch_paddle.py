@@ -79,21 +79,31 @@ def to_major(amount_str, currency):
     return v / 100.0
 
 def paddle_get(path, params=None):
-    """Single authenticated GET to Paddle API with retry on 429."""
+    """Single authenticated GET to Paddle API with retry on 429 and 5xx errors."""
     headers = {
         'Authorization': f'Bearer {API_KEY}',
         'Content-Type':  'application/json',
     }
-    for attempt in range(5):
-        r = requests.get(BASE_URL + path, headers=headers, params=params, timeout=30)
-        if r.status_code == 429:
-            wait = int(r.headers.get('Retry-After', 10))
-            print(f"    Rate-limited — waiting {wait}s …", flush=True)
+    for attempt in range(8):
+        try:
+            r = requests.get(BASE_URL + path, headers=headers, params=params, timeout=60)
+            if r.status_code == 429:
+                wait = int(r.headers.get('Retry-After', 15))
+                print(f"    Rate-limited — waiting {wait}s …", flush=True)
+                time.sleep(wait)
+                continue
+            if r.status_code in (500, 502, 503, 504):
+                wait = min(10 * (attempt + 1), 60)  # 10s, 20s, 30s … up to 60s
+                print(f"    Paddle {r.status_code} — retrying in {wait}s (attempt {attempt+1}/8) …", flush=True)
+                time.sleep(wait)
+                continue
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.ConnectionError as e:
+            wait = min(10 * (attempt + 1), 60)
+            print(f"    Connection error — retrying in {wait}s (attempt {attempt+1}/8): {e}", flush=True)
             time.sleep(wait)
-            continue
-        r.raise_for_status()
-        return r.json()
-    raise RuntimeError(f"Failed after 5 retries: {path}")
+    raise RuntimeError(f"Failed after 8 retries: {path}")
 
 # ── Fetch transactions ────────────────────────────────────────────────────────
 mode_label = "INCREMENTAL" if IS_INCREMENTAL else "FULL"
