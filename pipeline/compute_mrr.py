@@ -136,18 +136,7 @@ with open(TLI_FILE, encoding='utf-8') as f:
         total_gross_usd += gross_usd
         total_disc_usd  += disc_usd
 
-        # Billing cycle
-        try:
-            freq = int(row['billing_cycle_frequency']) if row.get('billing_cycle_frequency') else 1
-        except:
-            freq = 1
-        interval = row.get('billing_cycle_interval', 'month')
-        if interval == 'year':
-            billing_months = 12 * max(1, freq)
-        else:
-            billing_months = max(1, freq)
-
-        # Dates
+        # Dates (parse early so we can use period dates for billing inference)
         billed_date  = (parse_date(row.get('transaction_billed_at'))
                         or parse_date(row.get('completed_at'))
                         or parse_date(row.get('transaction_created_at')))
@@ -157,7 +146,29 @@ with open(TLI_FILE, encoding='utf-8') as f:
         if not billed_date:
             continue
 
-        email   = row.get('customer_email', '').strip().lower()
+        # Billing cycle — prefer date-based inference over billing_cycle field.
+        # Paddle's list API often omits billing_cycle in price objects, so we
+        # infer from how long the billing period actually spans.
+        if period_start and period_end:
+            _days = (period_end - period_start).days
+            billing_months = max(1, round(_days / 30.44))
+        else:
+            # Fallback: use explicit billing_cycle columns
+            try:
+                freq = int(row['billing_cycle_frequency']) if row.get('billing_cycle_frequency') else 1
+            except:
+                freq = 1
+            interval = row.get('billing_cycle_interval', 'month')
+            if interval == 'year':
+                billing_months = 12 * max(1, freq)
+            else:
+                billing_months = max(1, freq)
+
+        # Customer identifier — use email when available, fall back to customer_id.
+        # (email is blank when include=customer is omitted from the Paddle API call)
+        email = row.get('customer_email', '').strip().lower()
+        if not email:
+            email = row.get('customer_id', '').strip()
         product = row.get('product_name', '').strip()
         origin  = row.get('origin', '').strip()
 
@@ -347,8 +358,8 @@ plan_mix = sorted(
 # Customer list
 email_to_subs = defaultdict(list)
 for sub_id, info in sub_info.items():
-    if info.get('email'):
-        email_to_subs[info['email']].append(sub_id)
+    ident = info.get('email') or sub_id   # fall back to sub_id if no email
+    email_to_subs[ident].append(sub_id)
 
 customer_list = []
 for email, sub_ids in email_to_subs.items():
