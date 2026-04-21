@@ -243,31 +243,47 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
                     })
                     rows_written += 1
             else:
+                # Build lookup from items[] for billing_period + billing_cycle
+                # details.line_items does NOT reliably carry these fields —
+                # they must be sourced from items[] keyed by price_id.
+                items_lookup = {}
+                for itm in (txn.get('items') or []):
+                    p       = itm.get('price', {}) or {}
+                    pid     = p.get('id', '')
+                    if pid:
+                        items_lookup[pid] = {
+                            'bc':      p.get('billing_cycle', {}) or {},
+                            'bp':      itm.get('billing_period', {}) or {},
+                            'product': (p.get('product', {}) or {}).get('name', ''),
+                            'desc':    p.get('description', ''),
+                        }
+
                 for li in line_items:
                     price_id  = li.get('price_id', '')
-                    prod_name = (li.get('product', {}) or {}).get('name', '')
-                    qty       = li.get('quantity', 1)
-                    bp        = li.get('billing_period', {}) or {}
                     li_totals = li.get('totals', {}) or {}
                     proration = li.get('proration', {}) or {}
+                    qty       = li.get('quantity', 1)
+
+                    # Always prefer items[] for billing info — it is authoritative
+                    itm_info  = items_lookup.get(price_id, {})
+                    bc        = itm_info.get('bc', {})
+                    bc_freq   = bc.get('frequency', 1)
+                    bc_intv   = bc.get('interval', 'month')
+
+                    # billing_period: prefer items[], fall back to line_item field
+                    bp_itm    = itm_info.get('bp', {})
+                    bp_li     = li.get('billing_period', {}) or {}
+                    bp        = bp_itm if bp_itm.get('starts_at') else bp_li
+
+                    prod_name = itm_info.get('product', '') or \
+                                (li.get('product', {}) or {}).get('name', '')
 
                     subtotal  = to_major(li_totals.get('subtotal',  '0'), currency)
                     discount  = to_major(li_totals.get('discount',  '0'), currency)
                     tax       = to_major(li_totals.get('tax',       '0'), currency)
                     total     = to_major(li_totals.get('total',     '0'), currency)
                     pror_rate = proration.get('rate', '') if proration else ''
-                    unit_p    = to_major(li_totals.get('subtotal',  '0'), currency)  # approx
-
-                    # Billing cycle from price in items (line_items may not have it)
-                    # Try to find matching item for billing cycle info
-                    bc_freq = 1
-                    bc_intv = 'month'
-                    for itm in (txn.get('items') or []):
-                        if (itm.get('price', {}) or {}).get('id', '') == price_id:
-                            bc = (itm.get('price', {}) or {}).get('billing_cycle', {}) or {}
-                            bc_freq = bc.get('frequency', 1)
-                            bc_intv = bc.get('interval', 'month')
-                            break
+                    unit_p    = to_major(li_totals.get('subtotal',  '0'), currency)
 
                     writer.writerow({
                         'transaction_id':    txn_id,
@@ -277,7 +293,7 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
                         'subscription_id':   sub_id,
                         'product_name':      prod_name,
                         'price_id':          price_id,
-                        'price_description': '',
+                        'price_description': itm_info.get('desc', ''),
                         'billing_cycle_frequency': bc_freq,
                         'billing_cycle_interval':  bc_intv,
                         'transaction_currency_code': currency,
