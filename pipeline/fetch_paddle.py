@@ -132,7 +132,8 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
             'status':              'completed',
             'billed_at[gte]':      FETCH_FROM,
             'per_page':            PER_PAGE,
-            'include':             'customer',   # embed customer email in response
+            # NOTE: do NOT add 'include=customer' — Paddle silently caps per_page
+            # at 30 when that param is used, making full fetches 6x slower.
         }
         if after_cursor:
             params['after'] = after_cursor
@@ -156,9 +157,8 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
             billed_at = txn.get('billed_at', '') or ''
             created_at = txn.get('created_at', '') or ''
 
-            # Customer email embedded via include=customer
-            cust_obj  = txn.get('customer') or {}
-            email     = (cust_obj.get('email') or '').strip().lower()
+            # customer email not fetched (include=customer removed for speed)
+            email     = ''
 
             # Completed_at from payment_attempts
             completed_at = ''
