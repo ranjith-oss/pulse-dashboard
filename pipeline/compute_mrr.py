@@ -28,7 +28,7 @@ KEY METHODOLOGY (unchanged from v3, simplified input)
 
 import csv, json, sys, glob, os
 from collections import defaultdict
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 from pathlib import Path
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -203,6 +203,15 @@ print(f"  Net USD (actual revenue)     : ${total_gross_usd - total_disc_usd:,.2f
 print(f"  Discount %                   : {total_disc_usd/total_gross_usd*100:.2f}%", flush=True)
 print(f"  Unique subscriptions         : {len(sub_txn_agg):,}", flush=True)
 
+# ── Diagnostic: billing_months distribution (helps verify annual plan handling)
+_bm_counts = {}
+for _sub, _txns in sub_txn_agg.items():
+    for _txn in _txns.values():
+        _bm = _txn['billing_months']
+        _bm_counts[_bm] = _bm_counts.get(_bm, 0) + 1
+print(f"  Billing months distribution  : { {k: v for k, v in sorted(_bm_counts.items())} }", flush=True)
+# If annual plans are handled correctly you should see a large count at bm=12
+
 # ── Step 2: Build subscription MRR timeline ──────────────────────────────────
 print("[2/4] Building subscription MRR timelines …", flush=True)
 
@@ -221,7 +230,9 @@ for sub_id, txn_dict in sub_txn_agg.items():
 
         if t['period_start'] and t['period_end']:
             start_m = month_str(t['period_start'])
-            end_m   = month_str(t['period_end'])
+            # Paddle's ends_at is EXCLUSIVE (= start of next billing period).
+            # Subtract 1 day so a monthly Oct 1→Nov 1 maps to Oct only, not Oct+Nov.
+            end_m   = month_str(t['period_end'] - timedelta(days=1))
         else:
             start_m = month_str(t['date'])
             end_m   = add_months(start_m, bm - 1)
@@ -302,7 +313,7 @@ for i, month in enumerate(all_months):
         'mrr_churn_rate':        0.0,
         'net_mrr_churn_rate':    0.0,
         'customer_churn_rate':   0.0,
-        'nrr':                   None,   # filled in below
+        'nrr':                   None,
     }
 
 # Derived churn rates + NRR
