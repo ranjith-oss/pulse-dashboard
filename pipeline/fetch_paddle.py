@@ -25,7 +25,7 @@ API_KEY        = os.environ['PADDLE_API_KEY']
 ENV            = os.environ.get('PADDLE_ENV', 'production')
 BASE_URL       = ('https://sandbox-api.paddle.com'
                   if ENV == 'sandbox' else 'https://api.paddle.com')
-FULL_FETCH_FROM = '2024-10-01T00:00:00Z'   # seed date: Paddle Billing launch month
+FULL_FETCH_FROM = '2024-12-01T00:00:00Z'   # seed date: Paddle Billing launch month
 PER_PAGE        = 200                        # Paddle max
 
 # Output goes into the same directory as the script (pipeline/)
@@ -184,6 +184,9 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
             mode      = txn.get('collection_mode', '')
             currency  = txn.get('currency_code', 'USD')
             billed_at = txn.get('billed_at', '') or ''
+            # Skip pre-Paddle-Billing transactions (before go-live 2024-12-01)
+            if billed_at and billed_at[:10] < '2024-12-01':
+                continue
             created_at = txn.get('created_at', '') or ''
 
             # customer email not fetched (include=customer removed for speed)
