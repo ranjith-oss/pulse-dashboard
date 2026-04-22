@@ -330,15 +330,13 @@ for i, month in enumerate(all_months[1:], 1):
         retained = m['opening_mrr'] + m['expansion'] + m['reactivation'] - m['contraction'] - m['churn']
         m['nrr'] = round(retained / m['opening_mrr'] * 100, 2)
 
-# Cap to last COMPLETE month (exclude current partial month)
+# Show up to current partial month (include April 2026 partial data)
 today = date.today()
-if today.month == 1:
-    last_complete_month = f'{today.year - 1:04d}-12'
-else:
-    last_complete_month = f'{today.year:04d}-{today.month - 1:02d}'
+current_month = f'{today.year:04d}-{today.month:02d}'
 
 months_with_data = [m for m in monthly_metrics if monthly_metrics[m]['closing_mrr'] > 0]
-last_actual = max((m for m in months_with_data if m <= last_complete_month), default=last_complete_month)
+last_actual = (max((m for m in months_with_data if m <= current_month), default=current_month)
+               if months_with_data else current_month)
 output_months = {m: v for m, v in monthly_metrics.items()
                  if REPORT_START <= m <= last_actual}
 out_list = sorted(output_months.keys())
