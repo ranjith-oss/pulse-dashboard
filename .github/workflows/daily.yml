@@ -29,12 +29,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r pipeline/requirements.txt
 
-      # ── 3. Fetch latest Paddle data via API ──────────────────────────────────
+      # ── 3. Fetch Paddle data via Reports API (fast, no pagination) ────────────
       - name: Fetch Paddle data
         env:
           PADDLE_API_KEY: ${{ secrets.PADDLE_API_KEY }}
           PADDLE_ENV: production
-        run: python pipeline/fetch_paddle.py
+        run: python pipeline/fetch_paddle_report.py
 
       # ── 4. Compute MRR metrics ───────────────────────────────────────────────
       - name: Compute MRR
