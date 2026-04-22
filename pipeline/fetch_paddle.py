@@ -5,8 +5,8 @@ Fetches all completed transactions from Paddle API and saves them in the
 same CSV format that compute_mrr.py expects.
 
 Env vars required:
-  PADDLE_API_KEY  – your Paddle secret key (pdl_live_...)
-  PADDLE_ENV      – 'production' (default) or 'sandbox'
+  PADDLE_API_KEY   — your Paddle secret key (pdl_live_...)
+  PADDLE_ENV       — 'production' (default) or 'sandbox'
 """
 
 import csv, os, time, json
@@ -20,12 +20,11 @@ except ImportError:
     subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'requests', '-q'])
     import requests
 
-API_KEY  = os.environ['PADDLE_API_KEY']
-ENV      = os.environ.get('PADDLE_ENV', 'production')
-BASE_URL = ('https://sandbox-api.paddle.com'
-            if ENV == 'sandbox' else
-            'https://api.paddle.com')
-
+# ── Config ────────────────────────────────────────────────────────────────────
+API_KEY        = os.environ['PADDLE_API_KEY']
+ENV            = os.environ.get('PADDLE_ENV', 'production')
+BASE_URL       = ('https://sandbox-api.paddle.com'
+                  if ENV == 'sandbox' else 'https://api.paddle.com')
 FULL_FETCH_FROM = '2024-10-01T00:00:00Z'   # seed date: Paddle Billing launch month
 PER_PAGE        = 200                        # Paddle max
 
@@ -59,14 +58,18 @@ def to_major(amount_str, currency):
     return v / 100.0
 
 def paddle_get(path, params=None):
-    """Single authenticated GET to Paddle API with retry on 429 and 5xx errors."""
+    """Single authenticated GET to Paddle API with retry on 429 and 5xx errors.
+    path may be a full URL (for cursor-based pagination) or a path like '/transactions'.
+    """
     headers = {
         'Authorization': f'Bearer {API_KEY}',
         'Content-Type':  'application/json',
     }
+    # Support full URLs (returned as 'next' cursors by Paddle's pagination)
+    url = path if path.startswith('http') else BASE_URL + path
     for attempt in range(8):
         try:
-            r = requests.get(BASE_URL + path, headers=headers, params=params, timeout=60)
+            r = requests.get(url, headers=headers, params=params, timeout=60)
             if r.status_code == 429:
                 wait = int(r.headers.get('Retry-After', 15))
                 print(f"    Rate-limited — waiting {wait}s …", flush=True)
@@ -83,7 +86,7 @@ def paddle_get(path, params=None):
             wait = min(10 * (attempt + 1), 60)
             print(f"    Connection error — retrying in {wait}s (attempt {attempt+1}/8): {e}", flush=True)
             time.sleep(wait)
-    raise RuntimeError(f"Failed after 8 retries: {path}")
+    raise RuntimeError(f"Failed after 8 retries: {url}")
 
 # ── Fetch price catalog for authoritative billing_cycle lookup ────────────────
 # Paddle's list-transactions API does NOT reliably return billing_cycle inside
@@ -118,7 +121,7 @@ while True:
 print(f"  {len(price_bc)} prices with billing_cycle loaded", flush=True)
 
 # ── Fetch transactions ────────────────────────────────────────────────────────
-mode_label = "FULL"
+mode_label = "INCREMENTAL" if IS_INCREMENTAL else "FULL"
 print(f"[1/2] Fetching completed transactions from Paddle API … [{mode_label}]", flush=True)
 print(f"      Base URL   : {BASE_URL}", flush=True)
 print(f"      Fetch from : {FETCH_FROM}", flush=True)
@@ -126,7 +129,10 @@ print(f"      Fetch from : {FETCH_FROM}", flush=True)
 rows_written = 0
 txn_count    = 0
 page         = 0
-after_cursor = None
+# Use a mutable URL + params for pagination.
+# After the first page, txn_next_url is set to Paddle's full 'next' cursor URL
+# and txn_params is set to None (all params are embedded in the URL already).
+txn_next_url = None   # None = use default path + params for first request
 
 fieldnames = [
     'transaction_id', 'transaction_status', 'customer_id', 'customer_email',
@@ -141,25 +147,27 @@ fieldnames = [
     'transaction_to_balance_currency_exchange_rate',
 ]
 
-# Always full fetch — overwrite CSV with fresh data and correct exchange rates
-file_mode = 'w'
+# Incremental: append to existing CSV (no header). Full: overwrite with header.
+file_mode = 'a' if IS_INCREMENTAL else 'w'
 with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
     writer = csv.DictWriter(f, fieldnames=fieldnames)
-    writer.writeheader()
+    if not IS_INCREMENTAL:
+        writer.writeheader()
 
     while True:
         page += 1
-        params = {
-            'status':              'completed',
-            'billed_at[gte]':      FETCH_FROM,
-            'per_page':            PER_PAGE,
-            # NOTE: do NOT add 'include=customer' — Paddle silently caps per_page
-            # at 30 when that param is used, making full fetches 6x slower.
-        }
-        if after_cursor:
-            params['after'] = after_cursor
-
-        resp     = paddle_get('/transactions', params)
+        if txn_next_url:
+            # Subsequent pages: use Paddle's full 'next' URL directly (no extra params)
+            resp = paddle_get(txn_next_url)
+        else:
+            # First page: build params normally
+            resp = paddle_get('/transactions', {
+                'status':     'completed',
+                'billed_at[gte]': FETCH_FROM,
+                'per_page':   PER_PAGE,
+                # NOTE: do NOT add 'include=customer' — Paddle silently caps per_page
+                # at 30 when that param is used, making full fetches 6x slower.
+            })
         txns     = resp.get('data', [])
         meta     = resp.get('meta', {})
         pag      = meta.get('pagination', {})
@@ -174,7 +182,7 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
             sub_id    = txn.get('subscription_id', '') or ''
             origin    = txn.get('origin', '')
             mode      = txn.get('collection_mode', '')
-            currency  = txn.get('currency_code', 'USD') or 'USD'
+            currency  = txn.get('currency_code', 'USD')
             billed_at = txn.get('billed_at', '') or ''
             created_at = txn.get('created_at', '') or ''
 
@@ -188,15 +196,16 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
                     completed_at = attempt.get('captured_at', '')
                     break
 
-            # Exchange rate: use details.payouts_totals (payout/USD amounts) vs
-            # details.totals (local currency amounts). Both are in minor units.
-            # IMPORTANT: details.totals.balance_subtotal does NOT exist in Paddle's
-            # API — the correct source is details.payouts_totals.subtotal.
+            # Exchange rate: compare balance subtotal to transaction subtotal
             details       = txn.get('details', {})
             totals        = details.get('totals', {})
-            payouts_totals = details.get('payouts_totals', {}) or {}
-            bal_currency  = totals.get('currency_code', 'USD') or 'USD'
+            bal_currency  = totals.get('balance_currency_code', 'USD') or 'USD'
 
+            # Rate: compute from details.payouts_totals (payout/USD amounts) vs
+            # details.totals (local currency amounts). Both are in minor units.
+            # details.totals.balance_subtotal does NOT exist in Paddle's API —
+            # the correct source is details.payouts_totals.subtotal.
+            payouts_totals = details.get('payouts_totals', {}) or {}
             raw_sub     = totals.get('subtotal', '0') or '0'
             raw_bal_sub = payouts_totals.get('subtotal', None)
 
@@ -340,12 +349,19 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
                     })
                     rows_written += 1
 
-        txn_count += len(txns)
-        print(f"    Page {page:4d}: {len(txns):2d} txns  |  total so far: {txn_count:,}  ({rows_written:,} line items)", flush=True)
+            txn_count += 1
 
-        after_cursor = pag.get('next', None)
-        if not pag.get('has_more', False) or not after_cursor:
+        print(f"    Page {page:>3}: {len(txns)} txns  |  total so far: {txn_count:,}  "
+              f"({rows_written:,} line items)", flush=True)
+
+        if not pag.get('has_more', False):
+            break
+        # Use Paddle's 'next' URL directly as the cursor for the next request.
+        # DO NOT try to extract 'after' from it — Paddle may use the full URL
+        # itself as an opaque cursor, so extracting params would corrupt it.
+        txn_next_url = pag.get('next', '')
+        if not txn_next_url:
             break
 
-print(f"  ✓ {txn_count:,} transactions → {rows_written:,} line item rows", flush=True)
+print(f"\n  ✓ {txn_count:,} transactions  →  {rows_written:,} line item rows", flush=True)
 print(f"  ✓ Saved: {TLI_OUT}", flush=True)
