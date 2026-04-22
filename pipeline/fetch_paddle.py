@@ -196,18 +196,18 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
                     completed_at = attempt.get('captured_at', '')
                     break
 
-            # Exchange rate: compare balance subtotal to transaction subtotal
+            # Exchange rate: compare payout subtotal (USD) to transaction subtotal (local)
             details       = txn.get('details', {})
             totals        = details.get('totals', {})
             bal_currency  = totals.get('balance_currency_code', 'USD') or 'USD'
 
-            # Rate: compute from details.payouts_totals (payout/USD amounts) vs
-            # details.totals (local currency amounts). Both are in minor units.
-            # details.totals.balance_subtotal does NOT exist in Paddle's API —
-            # the correct source is details.payouts_totals.subtotal.
-            payouts_totals = details.get('payouts_totals', {}) or {}
+            # Correct field: details.payout_totals.subtotal  (NOT payouts_totals — typo)
+            # details.payout_totals contains amounts in the payout/balance currency (USD).
+            # details.totals contains amounts in the transaction's local currency.
+            # Exchange rate = payout_subtotal / local_subtotal  (both in minor units)
+            payout_totals = details.get('payout_totals', {}) or {}
             raw_sub     = totals.get('subtotal', '0') or '0'
-            raw_bal_sub = payouts_totals.get('subtotal', None)
+            raw_bal_sub = payout_totals.get('subtotal', None)
 
             if raw_bal_sub is not None:
                 try:
