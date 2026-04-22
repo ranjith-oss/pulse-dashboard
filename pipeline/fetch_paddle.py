@@ -5,8 +5,8 @@ Fetches all completed transactions from Paddle API and saves them in the
 same CSV format that compute_mrr.py expects.
 
 Env vars required:
-  PADDLE_API_KEY   — your Paddle secret key (pdl_live_...)
-  PADDLE_ENV       — 'production' (default) or 'sandbox'
+  PADDLE_API_KEY  – your Paddle secret key (pdl_live_...)
+  PADDLE_ENV      – 'production' (default) or 'sandbox'
 """
 
 import csv, os, time, json
@@ -20,11 +20,12 @@ except ImportError:
     subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'requests', '-q'])
     import requests
 
-# ── Config ────────────────────────────────────────────────────────────────────
-API_KEY        = os.environ['PADDLE_API_KEY']
-ENV            = os.environ.get('PADDLE_ENV', 'production')
-BASE_URL       = ('https://sandbox-api.paddle.com'
-                  if ENV == 'sandbox' else 'https://api.paddle.com')
+API_KEY  = os.environ['PADDLE_API_KEY']
+ENV      = os.environ.get('PADDLE_ENV', 'production')
+BASE_URL = ('https://sandbox-api.paddle.com'
+            if ENV == 'sandbox' else
+            'https://api.paddle.com')
+
 FULL_FETCH_FROM = '2024-10-01T00:00:00Z'   # seed date: Paddle Billing launch month
 PER_PAGE        = 200                        # Paddle max
 
@@ -32,38 +33,23 @@ PER_PAGE        = 200                        # Paddle max
 OUT_DIR  = Path(__file__).parent
 TLI_OUT  = OUT_DIR / 'transaction_line_items.csv'
 
-# ── Incremental fetch: determine start date ───────────────────────────────────
-def get_incremental_start():
-    if not TLI_OUT.exists():
-        print(f"  No existing CSV — full fetch from {FULL_FETCH_FROM}", flush=True)
-        return FULL_FETCH_FROM, False
-    latest_date = None
-    with open(TLI_OUT, encoding='utf-8') as f:
-        for row in csv.DictReader(f):
-            for col in ('transaction_billed_at', 'completed_at', 'transaction_created_at'):
-                val = row.get(col, '').strip()
-                if val:
-                    try:
-                        d = datetime.strptime(val[:19], '%Y-%m-%dT%H:%M:%S')
-                        if latest_date is None or d > latest_date:
-                            latest_date = d
-                    except ValueError:
-                        pass
-    if latest_date is None:
-        print(f"  Existing CSV has no dates — full fetch from {FULL_FETCH_FROM}", flush=True)
-        return FULL_FETCH_FROM, False
-    cutoff = (latest_date - timedelta(days=3)).strftime('%Y-%m-%dT%H:%M:%SZ')
-    print(f"  Existing CSV latest date: {latest_date.date()} — incremental fetch from {cutoff}", flush=True)
-    return cutoff, True
+# ── Always do a full fetch ────────────────────────────────────────────────────
+# NOTE: Paddle's /transactions endpoint does NOT support billed_at[gte] filtering
+# (the parameter is silently ignored). Every run returns ALL transactions regardless,
+# so there is no benefit to incremental mode. We always do a full overwrite so
+# the CSV stays clean and exchange rates are always freshly computed.
+FETCH_FROM     = FULL_FETCH_FROM
+IS_INCREMENTAL = False
+print(f"  Full fetch from {FULL_FETCH_FROM} (Paddle billed_at filter not supported)", flush=True)
 
-FETCH_FROM, IS_INCREMENTAL = get_incremental_start()
-
+# Zero-decimal currencies (don't divide by 100)
 ZERO_DECIMAL = {
     'BIF','CLP','DJF','GNF','JPY','KMF','KRW','MGA','PYG',
     'RWF','UGX','VND','VUV','XAF','XOF','XPF'
 }
 
 def to_major(amount_str, currency):
+    """Convert Paddle minor-unit string to float major units."""
     try:
         v = float(amount_str)
     except (TypeError, ValueError):
@@ -73,6 +59,7 @@ def to_major(amount_str, currency):
     return v / 100.0
 
 def paddle_get(path, params=None):
+    """Single authenticated GET to Paddle API with retry on 429 and 5xx errors."""
     headers = {
         'Authorization': f'Bearer {API_KEY}',
         'Content-Type':  'application/json',
@@ -86,7 +73,7 @@ def paddle_get(path, params=None):
                 time.sleep(wait)
                 continue
             if r.status_code in (500, 502, 503, 504):
-                wait = min(10 * (attempt + 1), 60)
+                wait = min(10 * (attempt + 1), 60)  # 10s, 20s, 30s … up to 60s
                 print(f"    Paddle {r.status_code} — retrying in {wait}s (attempt {attempt+1}/8) …", flush=True)
                 time.sleep(wait)
                 continue
@@ -99,8 +86,11 @@ def paddle_get(path, params=None):
     raise RuntimeError(f"Failed after 8 retries: {path}")
 
 # ── Fetch price catalog for authoritative billing_cycle lookup ────────────────
+# Paddle's list-transactions API does NOT reliably return billing_cycle inside
+# items[].price — it's often absent. Fetching /prices first gives us a small,
+# stable lookup table (usually < 200 prices) that is always populated.
 print("[0/2] Fetching price catalog …", flush=True)
-price_bc = {}
+price_bc = {}   # price_id → {'interval': 'month'|'year', 'frequency': N}
 _after = None
 while True:
     _params = {'per_page': 200}
@@ -128,7 +118,7 @@ while True:
 print(f"  {len(price_bc)} prices with billing_cycle loaded", flush=True)
 
 # ── Fetch transactions ────────────────────────────────────────────────────────
-mode_label = "INCREMENTAL" if IS_INCREMENTAL else "FULL"
+mode_label = "FULL"
 print(f"[1/2] Fetching completed transactions from Paddle API … [{mode_label}]", flush=True)
 print(f"      Base URL   : {BASE_URL}", flush=True)
 print(f"      Fetch from : {FETCH_FROM}", flush=True)
@@ -151,11 +141,11 @@ fieldnames = [
     'transaction_to_balance_currency_exchange_rate',
 ]
 
-file_mode = 'a' if IS_INCREMENTAL else 'w'
+# Always full fetch — overwrite CSV with fresh data and correct exchange rates
+file_mode = 'w'
 with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
     writer = csv.DictWriter(f, fieldnames=fieldnames)
-    if not IS_INCREMENTAL:
-        writer.writeheader()
+    writer.writeheader()
 
     while True:
         page += 1
@@ -163,6 +153,8 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
             'status':              'completed',
             'billed_at[gte]':      FETCH_FROM,
             'per_page':            PER_PAGE,
+            # NOTE: do NOT add 'include=customer' — Paddle silently caps per_page
+            # at 30 when that param is used, making full fetches 6x slower.
         }
         if after_cursor:
             params['after'] = after_cursor
@@ -182,23 +174,31 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
             sub_id    = txn.get('subscription_id', '') or ''
             origin    = txn.get('origin', '')
             mode      = txn.get('collection_mode', '')
-            currency  = txn.get('currency_code', 'USD')
+            currency  = txn.get('currency_code', 'USD') or 'USD'
             billed_at = txn.get('billed_at', '') or ''
             created_at = txn.get('created_at', '') or ''
+
+            # customer email not fetched (include=customer removed for speed)
             email     = ''
 
+            # Completed_at from payment_attempts
             completed_at = ''
             for attempt in (txn.get('payments') or []):
                 if attempt.get('status') == 'captured':
                     completed_at = attempt.get('captured_at', '')
                     break
 
+            # Exchange rate: use details.payouts_totals (payout/USD amounts) vs
+            # details.totals (local currency amounts). Both are in minor units.
+            # IMPORTANT: details.totals.balance_subtotal does NOT exist in Paddle's
+            # API — the correct source is details.payouts_totals.subtotal.
             details       = txn.get('details', {})
             totals        = details.get('totals', {})
-            bal_currency  = totals.get('balance_currency_code', 'USD') or 'USD'
+            payouts_totals = details.get('payouts_totals', {}) or {}
+            bal_currency  = totals.get('currency_code', 'USD') or 'USD'
 
             raw_sub     = totals.get('subtotal', '0') or '0'
-            raw_bal_sub = totals.get('balance_subtotal', None)
+            raw_bal_sub = payouts_totals.get('subtotal', None)
 
             if raw_bal_sub is not None:
                 try:
@@ -206,16 +206,19 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
                     bal_sub   = float(raw_bal_sub)
                     if local_sub != 0:
                         rate = (bal_sub / local_sub)
+                        # both are in minor units so rate is correct
                     else:
                         rate = 1.0
                 except (ValueError, ZeroDivisionError):
                     rate = 1.0
             else:
-                rate = 1.0
+                rate = 1.0    # same currency or unknown (fallback)
 
+            # Line items live in details.line_items
             line_items = details.get('line_items', [])
 
             if not line_items:
+                # Fallback: use items array directly
                 line_items_raw = txn.get('items', [])
                 for item in line_items_raw:
                     price     = item.get('price', {}) or {}
@@ -264,6 +267,9 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
                     })
                     rows_written += 1
             else:
+                # Build lookup from items[] for billing_period + billing_cycle
+                # details.line_items does NOT reliably carry these fields —
+                # they must be sourced from items[] keyed by price_id.
                 items_lookup = {}
                 for itm in (txn.get('items') or []):
                     p       = itm.get('price', {}) or {}
@@ -282,11 +288,13 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
                     proration = li.get('proration', {}) or {}
                     qty       = li.get('quantity', 1)
 
+                    # Billing cycle: items[] first, then price catalog, then default
                     itm_info  = items_lookup.get(price_id, {})
                     bc        = itm_info.get('bc') or price_bc.get(price_id, {})
                     bc_freq   = bc.get('frequency', 1)
                     bc_intv   = bc.get('interval', 'month')
 
+                    # billing_period: prefer items[], fall back to line_item field
                     bp_itm    = itm_info.get('bp', {})
                     bp_li     = li.get('billing_period', {}) or {}
                     bp        = bp_itm if bp_itm.get('starts_at') else bp_li
@@ -332,20 +340,12 @@ with open(TLI_OUT, file_mode, newline='', encoding='utf-8') as f:
                     })
                     rows_written += 1
 
-            txn_count += 1
+        txn_count += len(txns)
+        print(f"    Page {page:4d}: {len(txns):2d} txns  |  total so far: {txn_count:,}  ({rows_written:,} line items)", flush=True)
 
-        print(f"    Page {page:>3}: {len(txns)} txns  |  total so far: {txn_count:,}  "
-              f"({rows_written:,} line items)", flush=True)
-
-        if not pag.get('has_more', False):
-            break
-        next_url = pag.get('next', '')
-        if next_url:
-            from urllib.parse import urlparse, parse_qs
-            qs = parse_qs(urlparse(next_url).query)
-            after_cursor = qs.get('after', [None])[0]
-        if not after_cursor:
+        after_cursor = pag.get('next', None)
+        if not pag.get('has_more', False) or not after_cursor:
             break
 
-print(f"\n  ✓ {txn_count:,} transactions  →  {rows_written:,} line item rows", flush=True)
+print(f"  ✓ {txn_count:,} transactions → {rows_written:,} line item rows", flush=True)
 print(f"  ✓ Saved: {TLI_OUT}", flush=True)
