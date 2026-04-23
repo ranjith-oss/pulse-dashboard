@@ -92,8 +92,8 @@ while elapsed < POLL_TIMEOUT:
     print(f'  {elapsed:>4}s  status={status}', flush=True)
 
     if status == 'ready':
-        # Paddle uses either "url" or "download_url" depending on API version
-        download_url = data.get('download_url') or data.get('url')
+        # Paddle Reports API nests the URL: data["urls"]["csv"]
+        download_url = (data.get('urls') or {}).get('csv') or data.get('download_url') or data.get('url')
         break
     if status in ('failed', 'invalid'):
         print(f'  Report generation failed: {data}', file=sys.stderr)
