@@ -1,0 +1,8 @@
+# Large intermediate files — never commit to git
+pipeline/transaction_line_items.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
