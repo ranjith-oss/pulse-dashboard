@@ -93,7 +93,14 @@ while elapsed < POLL_TIMEOUT:
 
     if status == 'ready':
         # Paddle Reports API nests the URL: data["urls"]["csv"]
-        download_url = (data.get('urls') or {}).get('csv') or data.get('download_url') or data.get('url')
+        import json as _json, sys as _sys
+        print(f'  DEBUG ready response: {_json.dumps(data, default=str)[:1000]}', flush=True)
+        urls_obj = data.get('urls') or {}
+        download_url = (urls_obj.get('csv') or urls_obj.get('download')
+                        or data.get('download_url') or data.get('url'))
+        if not download_url:
+            print(f'  ERROR: no download URL found. Keys: {list(data.keys())}', file=_sys.stderr)
+            _sys.exit(1)
         break
     if status in ('failed', 'invalid'):
         print(f'  Report generation failed: {data}', file=sys.stderr)
