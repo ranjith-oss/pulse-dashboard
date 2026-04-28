@@ -11,6 +11,38 @@ API: GET /subscriptions?status=active&per_page=200  (paginated)
 import os, sys, json, requests
 from pathlib import Path
 
+# ── FX rates: fetch live USD-base rates, fall back to hardcoded ──────────────
+def get_fx_rates():
+    try:
+        r = requests.get('https://open.er-api.com/v6/latest/USD', timeout=10)
+        data = r.json()
+        if data.get('result') == 'success':
+            return data['rates']
+    except Exception:
+        pass
+    # Fallback hardcoded rates (approximate, update periodically)
+    return {
+        'USD': 1.0,   'INR': 0.01195, 'EUR': 1.08,  'GBP': 1.27,
+        'CAD': 0.73,  'AUD': 0.63,    'BRL': 0.176,  'MXN': 0.049,
+        'SGD': 0.74,  'AED': 0.272,   'IDR': 0.000062,'JPY': 0.0067,
+        'MYR': 0.225, 'PHP': 0.0175,  'THB': 0.028,  'VND': 0.000040,
+        'NGN': 0.00063,'KES': 0.0077, 'ZAR': 0.054,  'TRY': 0.028,
+        'SAR': 0.267, 'QAR': 0.275,   'KWD': 3.26,   'BDT': 0.0091,
+        'PKR': 0.0036,'LKR': 0.0034,  'NZD': 0.58,   'CHF': 1.12,
+        'SEK': 0.094, 'NOK': 0.093,   'DKK': 0.145,  'PLN': 0.25,
+        'CZK': 0.044, 'HUF': 0.0028,  'RON': 0.22,   'CLP': 0.00105,
+        'COP': 0.000245,'PEN': 0.266, 'ARS': 0.00099,'TWD': 0.031,
+        'KRW': 0.00071,'HKD': 0.128,
+    }
+
+FX = get_fx_rates()
+
+def to_usd(amount_minor, currency):
+    """Convert from Paddle minor unit (cents/paise/etc.) to USD."""
+    rate = FX.get(currency.upper(), 1.0)
+    # Paddle uses 100 subunits for virtually all currencies
+    return (amount_minor / 100.0) * rate
+
 BASE_URL  = 'https://api.paddle.com'
 API_KEY   = os.environ.get('PADDLE_API_KEY', '')
 OUT_PATH  = Path(__file__).parent / 'active_subscriptions.json'
@@ -102,10 +134,11 @@ for sub in subs:
         price = item.get('price', {})
         qty   = item.get('quantity', 1) or 1
 
-        # Unit price in smallest currency unit (cents)
+        # Unit price in smallest currency unit — convert to USD
         unit_price_data = price.get('unit_price', {})
-        unit_amount = int(unit_price_data.get('amount', 0))  # in cents
-        unit_usd = unit_amount / 100.0
+        unit_amount  = int(unit_price_data.get('amount', 0))
+        price_currency = (unit_price_data.get('currency_code') or currency).upper()
+        unit_usd = to_usd(unit_amount, price_currency)
 
         if unit_usd <= 0:
             skipped += 1
