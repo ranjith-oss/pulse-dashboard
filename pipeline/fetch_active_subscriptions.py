@@ -10,6 +10,7 @@ API: GET /subscriptions?status=active&per_page=200  (paginated)
 """
 import os, sys, json, requests
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs
 
 BASE_URL  = 'https://api.paddle.com'
 API_KEY   = os.environ.get('PADDLE_API_KEY', '')
@@ -48,14 +49,32 @@ def get_paginated(path, params=None):
         p = {**(params or {}), 'per_page': 200}
         if cursor: p['after'] = cursor
         r = requests.get(BASE_URL + path, headers=HEADERS, params=p, timeout=30)
+        if r.status_code == 403:
+            print('', flush=True)
+            print('WARNING: Paddle API returned 403 Forbidden.', flush=True)
+            print('  The API key is missing "Subscriptions Read" permission.', flush=True)
+            print('  To fix: Paddle Dashboard → Developer Tools → Authentication', flush=True)
+            print('          → Edit your API key → enable "Subscriptions: Read"', flush=True)
+            print('', flush=True)
+            print('Skipping active_subscriptions.json — pipeline will use transaction data for current month.', flush=True)
+            sys.exit(0)
         r.raise_for_status()
         data = r.json()
         page = data.get('data', [])
         items.extend(page)
         meta = data.get('meta', {})
         pagination = meta.get('pagination', {})
-        cursor = pagination.get('next') or pagination.get('cursor_after')
-        if not cursor or not page:
+        has_more = pagination.get('has_more', False)
+        if not has_more or not page:
+            break
+        # 'next' is a full URL — extract the 'after' cursor from its query string
+        next_url = pagination.get('next', '')
+        if next_url:
+            qs = parse_qs(urlparse(next_url).query)
+            cursor = (qs.get('after') or [None])[0]
+        else:
+            cursor = pagination.get('cursor_after')
+        if not cursor:
             break
     return items
 
