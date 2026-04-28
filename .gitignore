@@ -1,8 +1,12 @@
-# Large intermediate files — never commit to git
+# Paddle report CSV — too large for GitHub (170MB+), regenerated daily by CI
 pipeline/transaction_line_items.csv
+
+# ChartMogul raw exports — not needed in repo (preprocessed into chartmogul_data.json)
+data/chartmogul_activities.csv
+data/chartmogul_mrr_per_month.csv
+data/chartmogul_mrr_per_plan.csv
 
 # Python
 __pycache__/
-*.py[cod]
-*.pyo
+*.pyc
 .env
