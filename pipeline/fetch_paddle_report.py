@@ -34,7 +34,7 @@ def api(method, path, **kw):
 
 # ── Step 1: Create report ────────────────────────────────────────────────
 print('[1/3] Creating Paddle transaction_line_items report …', flush=True)
-body = {'type': 'transaction_line_items', 'filters': [{'name':'collection_mode','operator':'eq','value':'automatic'}]}
+body = {'type': 'transaction_line_items', 'filters': []}
 resp = api('POST', '/reports', json=body)
 data = resp.get('data', resp)
 rep_id = data.get('id')
