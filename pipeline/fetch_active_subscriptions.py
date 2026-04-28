@@ -3,45 +3,16 @@
 fetch_active_subscriptions.py  —  Pull current active subscriptions from Paddle REST API.
 Writes pipeline/active_subscriptions.json (current-month MRR snapshot).
 
-This is the authoritative source for CURRENT MONTH MRR.
-It mirrors what ChartMogul does: subscription state × recurring price.
+MRR calculation:
+  - Fetches all active subscription IDs + plan metadata from Paddle API
+  - Joins each subscription against its most recent transaction in the CSV
+  - Uses (subtotal - discount) × transaction_to_balance_currency_exchange_rate
+    to get the USD amount — the same rate Paddle uses, same as ChartMogul
 
 API: GET /subscriptions?status=active&per_page=200  (paginated)
 """
-import os, sys, json, requests
+import os, sys, json, csv, requests
 from pathlib import Path
-
-# ── FX rates: fetch live USD-base rates, fall back to hardcoded ──────────────
-def get_fx_rates():
-    try:
-        r = requests.get('https://open.er-api.com/v6/latest/USD', timeout=10)
-        data = r.json()
-        if data.get('result') == 'success':
-            return data['rates']
-    except Exception:
-        pass
-    # Fallback hardcoded rates (approximate, update periodically)
-    return {
-        'USD': 1.0,   'INR': 0.01195, 'EUR': 1.08,  'GBP': 1.27,
-        'CAD': 0.73,  'AUD': 0.63,    'BRL': 0.176,  'MXN': 0.049,
-        'SGD': 0.74,  'AED': 0.272,   'IDR': 0.000062,'JPY': 0.0067,
-        'MYR': 0.225, 'PHP': 0.0175,  'THB': 0.028,  'VND': 0.000040,
-        'NGN': 0.00063,'KES': 0.0077, 'ZAR': 0.054,  'TRY': 0.028,
-        'SAR': 0.267, 'QAR': 0.275,   'KWD': 3.26,   'BDT': 0.0091,
-        'PKR': 0.0036,'LKR': 0.0034,  'NZD': 0.58,   'CHF': 1.12,
-        'SEK': 0.094, 'NOK': 0.093,   'DKK': 0.145,  'PLN': 0.25,
-        'CZK': 0.044, 'HUF': 0.0028,  'RON': 0.22,   'CLP': 0.00105,
-        'COP': 0.000245,'PEN': 0.266, 'ARS': 0.00099,'TWD': 0.031,
-        'KRW': 0.00071,'HKD': 0.128,
-    }
-
-FX = get_fx_rates()
-
-def to_usd(amount_minor, currency):
-    """Convert from Paddle minor unit (cents/paise/etc.) to USD."""
-    rate = FX.get(currency.upper(), 1.0)
-    # Paddle uses 100 subunits for virtually all currencies
-    return (amount_minor / 100.0) * rate
 
 BASE_URL  = 'https://api.paddle.com'
 API_KEY   = os.environ.get('PADDLE_API_KEY', '')
@@ -112,43 +83,57 @@ def get_paginated(path, params=None):
 
     return items
 
-print('[1/2] Fetching active subscriptions from Paddle …', flush=True)
+print('[1/3] Fetching active subscriptions from Paddle …', flush=True)
 subs = get_paginated('/subscriptions', {'status': 'active'})
 print(f'  Found {len(subs):,} active subscriptions', flush=True)
 
-print('[2/2] Computing MRR from subscription prices …', flush=True)
+# ── Step 2: Load transaction CSV — use Paddle's own USD exchange rates ────────
+CSV_PATH = Path(__file__).parent / 'transaction_line_items.csv'
+print('[2/3] Loading transaction CSV for Paddle USD exchange rates …', flush=True)
+# Build map: subscription_id → most recent completed transaction row
+sub_latest_txn = {}
+if CSV_PATH.exists():
+    with open(CSV_PATH, newline='', encoding='utf-8') as f:
+        for row in csv.DictReader(f):
+            if row.get('transaction_status') != 'completed':
+                continue
+            sid = row.get('subscription_id', '').strip()
+            if not sid:
+                continue
+            billed_at = row.get('transaction_billed_at', '') or row.get('completed_at', '')
+            existing  = sub_latest_txn.get(sid)
+            if existing is None or billed_at > existing.get('_billed_at', ''):
+                row['_billed_at'] = billed_at
+                sub_latest_txn[sid] = row
+    print(f'  Loaded exchange rates for {len(sub_latest_txn):,} subscriptions from CSV', flush=True)
+else:
+    print('  WARNING: transaction_line_items.csv not found — MRR will use unit_price (less accurate)', flush=True)
+
+# ── Step 3: Compute MRR ───────────────────────────────────────────────────────
+print('[3/3] Computing MRR …', flush=True)
 total_mrr   = 0.0
 plan_mrr    = {}
 sub_details = []
 skipped     = 0
+csv_matched = 0
 
 for sub in subs:
     sub_id  = sub.get('id', '')
     cust_id = sub.get('customer_id', '')
-    status  = sub.get('status', '')
     currency= sub.get('currency_code', 'USD')
 
-    # Items on the subscription
+    # Get plan metadata from subscription items
     items = sub.get('items', [])
     for item in items:
-        price = item.get('price', {})
-        qty   = item.get('quantity', 1) or 1
-
-        # Unit price in smallest currency unit — convert to USD
-        unit_price_data = price.get('unit_price', {})
-        unit_amount  = int(unit_price_data.get('amount', 0))
-        price_currency = (unit_price_data.get('currency_code') or currency).upper()
-        unit_usd = to_usd(unit_amount, price_currency)
-
-        if unit_usd <= 0:
-            skipped += 1
-            continue
+        price    = item.get('price', {})
+        qty      = item.get('quantity', 1) or 1
+        plan_name  = price.get('description', '') or price.get('name', '')
+        plan_group = norm_plan(plan_name)
 
         # Billing cycle
-        billing = price.get('billing_cycle', {})
-        interval = (billing.get('interval', '') or '').lower()
+        billing   = price.get('billing_cycle', {})
+        interval  = (billing.get('interval', '') or '').lower()
         frequency = int(billing.get('frequency', 1) or 1)
-
         if interval in ('year', 'yearly', 'annual'):
             cycle_months = 12 * frequency
         elif interval in ('month', 'monthly'):
@@ -156,23 +141,42 @@ for sub in subs:
         else:
             cycle_months = 1
 
-        # Exchange rate: use scheduled_change or just assume USD for now
-        # TODO: handle multi-currency subs via exchange rate
-        mrr = (unit_usd * qty) / cycle_months
+        # ── Prefer CSV rate (Paddle's own USD conversion) ──────────────────
+        txn = sub_latest_txn.get(sub_id)
+        if txn:
+            try:
+                subtotal  = float(txn.get('subtotal') or 0)
+                discount  = float(txn.get('discount') or 0)
+                fx_rate   = float(txn.get('transaction_to_balance_currency_exchange_rate') or 1)
+                net_usd   = (subtotal - discount) * fx_rate
+                mrr       = net_usd / max(cycle_months, 1)
+                csv_matched += 1
+            except (ValueError, TypeError):
+                txn = None  # fall through to unit_price fallback
 
-        plan_name = price.get('description', '') or price.get('name', '')
-        plan_group = norm_plan(plan_name)
+        if not txn:
+            # Fallback: unit_price treated as USD (accurate for USD-only subs)
+            unit_price_data = price.get('unit_price', {})
+            unit_amount = int(unit_price_data.get('amount', 0))
+            unit_usd    = unit_amount / 100.0
+            if unit_usd <= 0:
+                skipped += 1
+                continue
+            mrr = (unit_usd * qty) / max(cycle_months, 1)
+
+        if mrr <= 0:
+            skipped += 1
+            continue
 
         total_mrr += mrr
         plan_mrr[plan_group] = plan_mrr.get(plan_group, 0) + mrr
-
         sub_details.append({
-            'sub_id':     sub_id,
+            'sub_id':      sub_id,
             'customer_id': cust_id,
-            'plan':       plan_group,
-            'mrr':        round(mrr, 4),
-            'interval':   interval,
-            'currency':   currency,
+            'plan':        plan_group,
+            'mrr':         round(mrr, 4),
+            'interval':    interval,
+            'currency':    currency,
         })
 
 plan_mrr = {k: round(v, 2) for k, v in sorted(plan_mrr.items(), key=lambda x: -x[1])}
@@ -187,8 +191,8 @@ output = {
 with open(OUT_PATH, 'w') as f:
     json.dump(output, f, indent=2)
 
-print(f'  Total MRR : ${total_mrr:,.2f}', flush=True)
-print(f'  Active subs: {len(subs):,}  (skipped {skipped} zero-price items)', flush=True)
+print(f'  Total MRR  : ${total_mrr:,.2f}', flush=True)
+print(f'  Active subs: {len(subs):,}  |  CSV-matched: {csv_matched:,}  |  skipped: {skipped}', flush=True)
 print(f'  Plan breakdown:', flush=True)
 for plan, mrr in list(plan_mrr.items())[:10]:
     print(f'    {plan:<35} ${mrr:>9,.2f}', flush=True)
